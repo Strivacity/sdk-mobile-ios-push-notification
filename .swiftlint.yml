@@ -1,0 +1,36 @@
+# Disable all rules by default
+disabled_rules: 
+  - trailing_comma
+  - type_body_length
+
+# Enable specific rules
+opt_in_rules: 
+  - empty_count
+  - explicit_init
+  - first_where
+  - implicitly_unwrapped_optional
+  - operator_usage_whitespace
+
+# Included files and directories
+included:
+  - Sources
+
+# Cyclomatic complexity
+cyclomatic_complexity:
+  ignores_case_statements: true
+  warning: 10
+  error: 20
+
+# Function parameter count
+function_parameter_count:
+  warning: 5
+  error: 8
+
+identifier_name:
+  excluded:
+    - id
+    - URL
+
+nesting:
+  type_level: 2
+
