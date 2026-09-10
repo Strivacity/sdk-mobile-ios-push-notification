@@ -1,0 +1,11 @@
+pre-commit:
+  parallel: false
+  files: git ls-files # run on all git-tracked files
+  jobs:
+    - name: Linting
+      group:
+        parallel: true
+        piped: false
+        jobs:
+          - run: swiftformat --lint .
+          - run: swiftlint .
