@@ -14,7 +14,9 @@ jobs:
 
       # SwiftFormat is preinstalled on GitHub's macOS runner images.
       - name: Run SwiftFormat check
-        run: swiftformat --lint .
+        run: |
+          swiftformat --version
+          swiftformat --lint .
 
   swiftlint:
     runs-on: macos-latest
@@ -27,3 +29,20 @@ jobs:
 
       - name: Run SwiftLint
         run: swiftlint .
+
+  test:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # Plain `swift test` doesn't work for this package — see README.md's Testing section for
+      # why. `xcodebuild` builds against the declared iOS minimum and runs in the simulator
+      # instead. `iPhone 17` must be one of the runner image's preinstalled simulators — see
+      # "Matching the CI tool versions" in README.md for which image macos-latest resolves to;
+      # swap the device name here if a future image drops it.
+      - name: Run tests
+        run: >
+          xcodebuild test
+          -scheme PushNotification
+          -destination 'platform=iOS Simulator,name=iPhone 17'

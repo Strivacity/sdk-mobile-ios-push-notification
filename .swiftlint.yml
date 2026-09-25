@@ -30,6 +30,7 @@ identifier_name:
   excluded:
     - id
     - URL
+    - ok
 
 nesting:
   type_level: 2
