@@ -7,14 +7,16 @@ import Foundation
 public struct PushNotification: PushNotificationInterface {
     private let storage: PushNotificationStorage
     private let client: PushNotificationClient
+    private let logging: Logging?
 
-    public init(storage: PushNotificationStorage) {
-        self.init(storage: storage, client: PushNotificationClient())
+    public init(storage: PushNotificationStorage, logging: Logging? = nil) {
+        self.init(storage: storage, client: PushNotificationClient(logging: logging), logging: logging)
     }
 
-    init(storage: PushNotificationStorage, client: PushNotificationClient) {
+    init(storage: PushNotificationStorage, client: PushNotificationClient, logging: Logging? = nil) {
         self.storage = storage
         self.client = client
+        self.logging = logging
     }
 
     public func enrollDevice(
@@ -25,8 +27,10 @@ public struct PushNotification: PushNotificationInterface {
     ) async throws -> Enrollment {
         try validateDeviceName(deviceName)
         let issuer = try normalizeIssuer(grant.issuer)
+        logging?.info("Enrollment started")
 
         if await isEnrolled(normalizedIssuer: issuer, accountId: grant.accountId) {
+            logging?.warn("Enrollment refused: this account is already enrolled")
             throw PushNotificationError.alreadyEnrolled(issuer: issuer, accountId: grant.accountId)
         }
 
@@ -50,6 +54,7 @@ public struct PushNotification: PushNotificationInterface {
             deviceTokenType: deviceTokenType,
             deviceName: deviceName
         )
+        logging?.info("Enrollment succeeded (key \(key.kid))")
 
         return Enrollment(
             issuer: issuer,
@@ -62,7 +67,9 @@ public struct PushNotification: PushNotificationInterface {
 
     public func unenrollDevice(issuer: String, accountId: String) async throws {
         let normalized = try normalizeIssuer(issuer)
+        logging?.info("Un-enrollment started")
         guard let key = try await storage.getPublicKey(issuer: normalized, accountId: accountId) else {
+            logging?.warn("Un-enrollment refused: no enrollment for this account")
             throw PushNotificationError.notEnrolled(accountId: accountId)
         }
 
@@ -75,10 +82,14 @@ public struct PushNotification: PushNotificationInterface {
         do {
             try await client.unenroll(normalizedIssuer: normalized, unenrollJwt: assertion)
         } catch {
+            logging?.warn(
+                "Un-enrollment failed at the backend (\(logLabel(error))); removing the local enrollment anyway"
+            )
             backendFailure = error
         }
 
         try await storage.removeEnrollment(issuer: normalized, accountId: accountId)
+        logging?.info("Local enrollment removed (key \(key.kid))")
 
         if let backendFailure {
             throw backendFailure
@@ -92,7 +103,9 @@ public struct PushNotification: PushNotificationInterface {
         deviceTokenType: DeviceTokenType
     ) async throws {
         let normalized = try normalizeIssuer(issuer)
+        logging?.info("Token update started")
         guard let key = try await storage.getPublicKey(issuer: normalized, accountId: accountId) else {
+            logging?.warn("Token update refused: no enrollment for this account")
             throw PushNotificationError.notEnrolled(accountId: accountId)
         }
 
@@ -105,6 +118,7 @@ public struct PushNotification: PushNotificationInterface {
         }
 
         try await client.updateToken(normalizedIssuer: normalized, updateTokenJwt: assertion)
+        logging?.info("Token update succeeded (key \(key.kid))")
     }
 
     public func hasEnrollment(issuer: String, accountId: String) async throws -> Bool {
@@ -120,15 +134,23 @@ public struct PushNotification: PushNotificationInterface {
         // `handleMessage`'s unguarded normalization — because it comes from an untrusted push
         // payload rather than a direct argument. A storage failure while looking up the
         // key is not swallowed the same way; it still throws.
-        guard let envelope = PushEnvelope.parse(messageData), let issuer = try? normalizeIssuer(envelope.issuer) else {
+        guard let envelope = PushEnvelope.parse(messageData, logging: logging) else {
+            return false
+        }
+        guard let issuer = try? normalizeIssuer(envelope.issuer) else {
+            logging?.debug("Message cannot be handled: its issuer is not a valid issuer")
+            return false
+        }
+        guard try await storage.getPublicKey(issuer: issuer, accountId: envelope.accountId) != nil else {
+            logging?.debug("Message cannot be handled: no enrollment matches it")
             return false
         }
 
-        return try await storage.getPublicKey(issuer: issuer, accountId: envelope.accountId) != nil
+        return true
     }
 
     public func handleMessage(_ messageData: [String: String]?) async throws -> Challenge {
-        guard let envelope = PushEnvelope.parse(messageData) else {
+        guard let envelope = PushEnvelope.parse(messageData, logging: logging) else {
             throw PushNotificationError.challengeUnavailable(
                 message: "Message carries no challenge this SDK version can handle",
                 status: nil,
@@ -138,11 +160,14 @@ public struct PushNotification: PushNotificationInterface {
 
         let issuer = try normalizeIssuer(envelope.issuer)
         guard try await storage.getPublicKey(issuer: issuer, accountId: envelope.accountId) != nil else {
+            logging?.warn("Challenge refused: no enrollment matches the message")
             throw PushNotificationError.notEnrolled(accountId: envelope.accountId)
         }
 
         let response = try await client.challenge(normalizedIssuer: issuer, challengeId: envelope.challengeId)
-        return try response.toDomain(envelope: envelope, normalizedIssuer: issuer)
+        let challenge = try response.toDomain(envelope: envelope, normalizedIssuer: issuer)
+        logging?.info("Challenge retrieved")
+        return challenge
     }
 
     public func resolveChallenge(_ resolution: ChallengeResolution) async throws -> ResolutionResult {
@@ -151,6 +176,7 @@ public struct PushNotification: PushNotificationInterface {
                 issuer: resolution.issuer,
                 accountId: resolution.accountId
             ) else {
+            logging?.warn("Resolution refused: no enrollment for this account")
             throw PushNotificationError.notEnrolled(accountId: resolution.accountId)
         }
 
@@ -171,6 +197,7 @@ public struct PushNotification: PushNotificationInterface {
             challengeId: resolution.challengeId,
             resolutionJwt: assertion
         )
+        logging?.info(accepted ? "Resolution accepted" : "Resolution not accepted")
         return accepted ? .ok : .notOk
     }
 
@@ -202,9 +229,14 @@ public struct PushNotification: PushNotificationInterface {
         } catch {
             // Broad catch deliberately: any failure here — not just a rejected/network
             // PushNotificationError, but also e.g. a request-encoding failure building
-            // EnrollRequest — must still roll back the freshly generated key. Not yet covered by
-            // a unit test.
-            try await storage.removeEnrollment(issuer: normalizedIssuer, accountId: grant.accountId)
+            // EnrollRequest — must still roll back the freshly generated key.
+            logging?.error("Enrollment failed (\(logLabel(error))); rolling back key \(key.kid)")
+            do {
+                try await storage.removeEnrollment(issuer: normalizedIssuer, accountId: grant.accountId)
+            } catch let rollbackError {
+                logging?.error("Rollback failed (\(logLabel(rollbackError))); key \(key.kid) may be orphaned")
+                throw rollbackError
+            }
             throw error
         }
     }

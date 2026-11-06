@@ -19,23 +19,31 @@ import Foundation
 public struct DefaultPushNotificationStorage: PushNotificationStorage {
     private let allowSoftwareBackedKeys: Bool
     private let keychain: KeychainItems
+    private let logging: Logging?
 
-    /// - Parameter allowSoftwareBackedKeys: if `false` (default), a key that could only be created
-    ///   in software is refused. The Simulator has no Secure Enclave at all.
-    public init(allowSoftwareBackedKeys: Bool = false) {
-        self.init(allowSoftwareBackedKeys: allowSoftwareBackedKeys, keychain: SystemKeychainItems())
+    /// - Parameters:
+    ///   - allowSoftwareBackedKeys: if `false` (default), a key that could only be created in
+    ///     software is refused. The Simulator has no Secure Enclave at all.
+    ///   - logging: receives the storage's log messages.
+    public init(allowSoftwareBackedKeys: Bool = false, logging: Logging? = nil) {
+        self.init(allowSoftwareBackedKeys: allowSoftwareBackedKeys, keychain: SystemKeychainItems(), logging: logging)
     }
 
-    init(allowSoftwareBackedKeys: Bool, keychain: KeychainItems) {
+    init(allowSoftwareBackedKeys: Bool, keychain: KeychainItems, logging: Logging? = nil) {
         self.allowSoftwareBackedKeys = allowSoftwareBackedKeys
         self.keychain = keychain
+        self.logging = logging
     }
 
     // MARK: - Keys
 
     public func getPublicKey(issuer: String, accountId: String) async throws -> Jwk? {
         // Only a single key should exist for an issuer and account combination.
-        guard let item = try items(for: issuer, accountId: accountId).first else {
+        let found = try items(for: issuer, accountId: accountId)
+        if found.count > 1 {
+            logging?.warn("Several keys exist for one enrollment; using the first")
+        }
+        guard let item = found.first else {
             return nil
         }
 
@@ -95,10 +103,12 @@ public struct DefaultPushNotificationStorage: PushNotificationStorage {
             storedKey = StoredKey(kind: .secureEnclave, data: privateKey.dataRepresentation, enrollment: record)
             publicKeyData = privateKey.publicKey.x963Representation
         } else if allowSoftwareBackedKeys {
+            logging?.info("The Secure Enclave is unavailable on this device; creating a software-held key")
             let privateKey = P256.Signing.PrivateKey()
             storedKey = StoredKey(kind: .software, data: privateKey.rawRepresentation, enrollment: record)
             publicKeyData = privateKey.publicKey.x963Representation
         } else {
+            logging?.error("The key could only be created in software, and software-backed keys are not allowed")
             throw PushNotificationError.softwareBackedKey
         }
 
@@ -107,15 +117,24 @@ public struct DefaultPushNotificationStorage: PushNotificationStorage {
     }
 
     public func listEnrollments() async -> [Enrollment] {
-        let items = (try? items(where: KeyAlias.isOurs)) ?? []
-        return items.map { $0.storedKey.enrollment.toEnrollment }
+        do {
+            return try items(where: KeyAlias.isOurs).map { $0.storedKey.enrollment.toEnrollment }
+        } catch {
+            logging?.error("Enrollments could not be listed (\(logLabel(error))); reporting none")
+            return []
+        }
     }
 
     /// Also removes an item stored under this issuer and account whose contents can't be read.
     public func removeEnrollment(issuer: String, accountId: String) async throws {
         let prefix = KeyAlias.prefixFor(issuer: issuer, accountId: accountId)
-        for alias in try keychain.all().keys where alias.hasPrefix(prefix) {
-            try keychain.delete(account: alias)
+        do {
+            for alias in try keychain.all().keys where alias.hasPrefix(prefix) {
+                try keychain.delete(account: alias)
+            }
+        } catch {
+            logging?.error("The enrollment could not be removed (\(logLabel(error)))")
+            throw error
         }
     }
 
@@ -130,11 +149,16 @@ public struct DefaultPushNotificationStorage: PushNotificationStorage {
     /// client-side.
     private func items(where isIncluded: (String) -> Bool) throws -> [KeychainItem] {
         try keychain.all().compactMap { alias, data in
-            guard isIncluded(alias), let storedKey = try? JSONDecoder().decode(StoredKey.self, from: data) else {
+            guard isIncluded(alias) else {
                 return nil
             }
 
-            return KeychainItem(alias: alias, storedKey: storedKey)
+            do {
+                return try KeychainItem(alias: alias, storedKey: JSONDecoder().decode(StoredKey.self, from: data))
+            } catch {
+                logging?.warn("Enrollment record unreadable, skipped (\(logLabel(error)))")
+                return nil
+            }
         }
     }
 }

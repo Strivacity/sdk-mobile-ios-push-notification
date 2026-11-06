@@ -23,10 +23,24 @@ enum PushEnvelope {
 
     /// Returns `nil` if no envelope is present, it cannot be parsed, or its version is not
     /// `supportedVersion`.
-    static func parse(_ messageData: [String: String]?) -> ChallengeEnvelope? {
-        guard let raw = messageData?[key], let data = raw.data(using: .utf8),
-              let envelope = try? JSONDecoder().decode(ChallengeEnvelope.self, from: data),
-              envelope.isUsable else {
+    static func parse(_ messageData: [String: String]?, logging: Logging? = nil) -> ChallengeEnvelope? {
+        guard let raw = messageData?[key] else {
+            logging?.debug("Message carries no push envelope")
+            return nil
+        }
+
+        let envelope: ChallengeEnvelope
+        do {
+            envelope = try JSONDecoder().decode(ChallengeEnvelope.self, from: Data(raw.utf8))
+        } catch {
+            logging?.warn("Push envelope could not be read (\(logLabel(error)))")
+            return nil
+        }
+
+        guard envelope.isUsable else {
+            if envelope.version != supportedVersion {
+                logging?.warn("Push envelope version is not supported by this SDK version")
+            }
             return nil
         }
 
