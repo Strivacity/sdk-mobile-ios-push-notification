@@ -270,9 +270,41 @@ struct PushNotificationLoggingTests {
         _ = try await sdk.canHandleMessage(envelopeMessageData(issuer: issuer, accountId: accountId))
 
         #expect(logging.lines == [
+            "DEBUG Checking whether a message can be handled",
             "DEBUG Message carries no push envelope",
+            "DEBUG Checking whether a message can be handled",
             "WARN Push envelope version is not supported by this SDK version",
+            "DEBUG Checking whether a message can be handled",
             "DEBUG Message cannot be handled: no enrollment matches it",
+        ])
+    }
+
+    @Test func eachCallThatLogsNothingElseLogsThatItWasMade() async throws {
+        let logging = RecordingLogging()
+        let storage = try await enrolledStorage()
+        let sdk = createTestPushNotificationSdk(storage: storage, logging: logging) { request in
+            if request.url?.path.contains("/actions/") == true {
+                return respondJson(for: request, body: approveDenyResponseBody())
+            }
+            return respondSuccess(for: request)
+        }
+
+        _ = try await sdk.hasEnrollment(issuer: issuer, accountId: accountId)
+        _ = await sdk.listEnrollments()
+        _ = try await sdk.canHandleMessage(envelopeMessageData(issuer: issuer, accountId: accountId))
+        let challenge = try await sdk.handleMessage(envelopeMessageData(issuer: issuer, accountId: accountId))
+        guard case let .simple(simple) = challenge else {
+            Issue.record("expected a simple challenge")
+            return
+        }
+        _ = try await sdk.resolveChallenge(simple.approve())
+
+        #expect(logging.lines.filter { $0.hasPrefix("DEBUG") } == [
+            "DEBUG Checking enrollment",
+            "DEBUG Listing enrollments",
+            "DEBUG Checking whether a message can be handled",
+            "DEBUG Handling message",
+            "DEBUG Resolving challenge",
         ])
     }
 
@@ -282,8 +314,9 @@ struct PushNotificationLoggingTests {
 
         _ = try await sdk.canHandleMessage([PushEnvelope.key: "not json"])
 
-        let line = try #require(logging.lines.first)
-        #expect(logging.lines.count == 1)
+        let lines = logging.lines.filter { $0.hasPrefix("WARN") }
+        let line = try #require(lines.first)
+        #expect(lines.count == 1)
         #expect(line.hasPrefix("WARN Push envelope could not be read ("))
         #expect(!line.contains("not json"))
     }

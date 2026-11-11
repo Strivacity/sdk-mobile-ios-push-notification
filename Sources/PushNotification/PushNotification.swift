@@ -122,14 +122,17 @@ public struct PushNotification: PushNotificationInterface {
     }
 
     public func hasEnrollment(issuer: String, accountId: String) async throws -> Bool {
-        try await isEnrolled(normalizedIssuer: normalizeIssuer(issuer), accountId: accountId)
+        logging?.debug("Checking enrollment")
+        return try await isEnrolled(normalizedIssuer: normalizeIssuer(issuer), accountId: accountId)
     }
 
     public func listEnrollments() async -> [Enrollment] {
-        await storage.listEnrollments()
+        logging?.debug("Listing enrollments")
+        return await storage.listEnrollments()
     }
 
     public func canHandleMessage(_ messageData: [String: String]?) async throws -> Bool {
+        logging?.debug("Checking whether a message can be handled")
         // A malformed issuer is swallowed to `false` here — unlike `hasEnrollment`'s or
         // `handleMessage`'s unguarded normalization — because it comes from an untrusted push
         // payload rather than a direct argument. A storage failure while looking up the
@@ -150,6 +153,7 @@ public struct PushNotification: PushNotificationInterface {
     }
 
     public func handleMessage(_ messageData: [String: String]?) async throws -> Challenge {
+        logging?.debug("Handling message")
         guard let envelope = PushEnvelope.parse(messageData, logging: logging) else {
             throw PushNotificationError.challengeUnavailable(
                 message: "Message carries no challenge this SDK version can handle",
@@ -171,6 +175,7 @@ public struct PushNotification: PushNotificationInterface {
     }
 
     public func resolveChallenge(_ resolution: ChallengeResolution) async throws -> ResolutionResult {
+        logging?.debug("Resolving challenge")
         guard
             let key = try await storage.getPublicKey(
                 issuer: resolution.issuer,
