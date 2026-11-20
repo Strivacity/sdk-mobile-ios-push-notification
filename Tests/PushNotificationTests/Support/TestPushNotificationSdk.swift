@@ -8,10 +8,11 @@ import Foundation
 /// small delegating wrapper around a fake to make one specific operation throw or return bad data.
 func createTestPushNotificationSdk(
     storage: PushNotificationStorage = FakePushNotificationStorage(),
+    logging: Logging? = nil,
     handleRequest: @escaping MockURLProtocol.Handler
 ) -> PushNotification {
-    let client = PushNotificationClient(session: mockSession(handler: handleRequest))
-    return PushNotification(storage: storage, client: client)
+    let client = PushNotificationClient(session: mockSession(handler: handleRequest), logging: logging)
+    return PushNotification(storage: storage, client: client, logging: logging)
 }
 
 /// A generic 2xx response, for a test that doesn't care about the response body.

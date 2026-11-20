@@ -70,3 +70,4 @@ Packages/
 *.certSigningRequest
 .env
 .env.local
+.idea

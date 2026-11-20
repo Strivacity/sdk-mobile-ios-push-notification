@@ -12,8 +12,10 @@ import Foundation
 /// Request and response bodies are not logged.
 struct PushNotificationClient {
     private let session: URLSession
+    private let logging: Logging?
 
-    init(session: URLSession? = nil) {
+    init(session: URLSession? = nil, logging: Logging? = nil) {
+        self.logging = logging
         if let session {
             self.session = session
         } else {
@@ -31,6 +33,7 @@ struct PushNotificationClient {
 
         let result = try await perform(urlRequest, operation: "enrollment")
         guard result.isSuccess else {
+            logging?.warn("Enrollment refused by the backend (status \(result.status))")
             throw PushNotificationError.enrollmentRejected(
                 message: "Enrollment was refused by the backend",
                 status: result.status,
@@ -43,6 +46,7 @@ struct PushNotificationClient {
         let urlRequest = try jwtRequest(.post, "\(normalizedIssuer.pushNotificationApi())/unenroll", jwt: unenrollJwt)
         let result = try await perform(urlRequest, operation: "un-enrollment")
         guard result.isSuccess else {
+            logging?.warn("Un-enrollment refused by the backend (status \(result.status))")
             throw PushNotificationError.unenrollmentRejected(
                 message: "Un-enrollment was refused by the backend",
                 status: result.status,
@@ -60,6 +64,7 @@ struct PushNotificationClient {
         )
         let result = try await perform(urlRequest, operation: "challenge retrieval")
         guard result.isSuccess else {
+            logging?.warn("Challenge '\(challengeId)' retrieval refused by the backend (status \(result.status))")
             throw PushNotificationError.challengeUnavailable(
                 message: "Challenge '\(challengeId)' could not be retrieved",
                 status: result.status,
@@ -70,6 +75,7 @@ struct PushNotificationClient {
         do {
             return try JSONDecoder().decode(ChallengeResponse.self, from: result.body)
         } catch {
+            logging?.error("Challenge '\(challengeId)' response could not be read (\(logLabel(error)))")
             throw PushNotificationError.challengeUnavailable(
                 message: "Challenge '\(challengeId)' was returned in a shape this SDK cannot read",
                 status: result.status,
@@ -91,8 +97,10 @@ struct PushNotificationClient {
             return true
         }
         if Self.rejectionStatuses.contains(result.status) {
+            logging?.debug("Challenge '\(challengeId)' resolution rejected by the backend (status \(result.status))")
             return false
         }
+        logging?.warn("Challenge '\(challengeId)' resolution failed at the backend (status \(result.status))")
         throw PushNotificationError.challengeUnavailable(
             message: "Resolution of challenge '\(challengeId)' failed",
             status: result.status,
@@ -108,6 +116,7 @@ struct PushNotificationClient {
         )
         let result = try await perform(urlRequest, operation: "token update")
         guard result.isSuccess else {
+            logging?.warn("Token update refused by the backend (status \(result.status))")
             throw PushNotificationError.tokenUpdateRejected(
                 message: "Token update was refused by the backend",
                 status: result.status,
@@ -147,6 +156,11 @@ struct PushNotificationClient {
         } catch let error as PushNotificationError {
             throw error
         } catch {
+            // A cancelled call is not a backend failure, so it is not logged as one.
+            let cancelled = error is CancellationError || (error as? URLError)?.code == .cancelled
+            if !cancelled {
+                logging?.error("The backend could not be reached during \(operation) (\(logLabel(error)))")
+            }
             throw PushNotificationError.networkFailure(
                 message: "The backend could not be reached during \(operation)",
                 cause: error

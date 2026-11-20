@@ -278,6 +278,24 @@ struct PushNotificationEnrollDeviceTests {
 
     // --- network failure ---
 
+    @Test func throwsTheRollbackFailureInsteadOfTheBackendRefusalWhenRollbackFails() async throws {
+        let storage = StorageFailingRemovalsAfterTheFirst(delegate: FakePushNotificationStorage())
+        let sdk = createTestPushNotificationSdk(storage: storage) { request in
+            respondFailure(for: request)
+        }
+
+        let thrown = try await #require(throws: TestFailure.self) {
+            _ = try await sdk.enrollDevice(
+                grant: grant,
+                deviceToken: "token-abc",
+                deviceTokenType: .fcmToken,
+                deviceName: "device"
+            )
+        }
+
+        #expect(thrown.description == StorageFailingRemovalsAfterTheFirst.failureDescription)
+    }
+
     @Test func throwsNetworkFailureWhenTheBackendCantBeReached() async throws {
         let sdk = createTestPushNotificationSdk { _ in
             throw URLError(.notConnectedToInternet)
@@ -592,6 +610,45 @@ struct PushNotificationEnrollDeviceTests {
             )
             return Jwk(kid: key.kid, alg: "RS256", members: key.members)
         }
+    }
+}
+
+/// Delegates to a fake, except that every `removeEnrollment` after the first throws.
+private struct StorageFailingRemovalsAfterTheFirst: PushNotificationStorage {
+    static let failureDescription = "removal failed"
+
+    let delegate: FakePushNotificationStorage
+    private let removals = LockedBox<Int>()
+
+    func getPublicKey(issuer: String, accountId: String) async throws -> Jwk? {
+        try await delegate.getPublicKey(issuer: issuer, accountId: accountId)
+    }
+
+    func createSignature(issuer: String, accountId: String, keyId: String, data: String) async throws -> String {
+        try await delegate.createSignature(issuer: issuer, accountId: accountId, keyId: keyId, data: data)
+    }
+
+    func createEnrollment(issuer: String, accountId: String, userName: String?,
+                          deviceName: String?) async throws -> Jwk {
+        try await delegate.createEnrollment(
+            issuer: issuer,
+            accountId: accountId,
+            userName: userName,
+            deviceName: deviceName
+        )
+    }
+
+    func listEnrollments() async -> [Enrollment] {
+        await delegate.listEnrollments()
+    }
+
+    func removeEnrollment(issuer: String, accountId: String) async throws {
+        let count = (removals.value ?? 0) + 1
+        removals.value = count
+        if count > 1 {
+            throw TestFailure(Self.failureDescription)
+        }
+        try await delegate.removeEnrollment(issuer: issuer, accountId: accountId)
     }
 }
 
